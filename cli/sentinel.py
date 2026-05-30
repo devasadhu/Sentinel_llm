@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys
+from analysis.transferability import build_transferability_matrix, load_latest_benchmark, save_transferability_report
 from analysis.defense_advisor import get_recommendations_from_suite
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -110,6 +111,60 @@ def benchmark(
     with open(path, "w") as f:
         json.dump(report.to_dict(), f, indent=2)
     console.print(f"[green]Report saved: {path}[/green]")
+
+@app.command()
+def transferability():
+    """Analyze cross-model attack transferability from latest benchmark."""
+    from rich.table import Table
+
+    try:
+        benchmark = load_latest_benchmark()
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    report = build_transferability_matrix(benchmark)
+    models = report.models
+
+    console.print(f"\n[bold cyan]Cross-Model Attack Transferability Matrix[/bold cyan]")
+    console.print(f"[dim]Models: {', '.join(models)}[/dim]\n")
+
+    table = Table(title="Attack Transferability")
+    table.add_column("Attack ID", style="cyan")
+    table.add_column("Transferability", justify="center")
+    table.add_column("Score", justify="center")
+    for model in models:
+        table.add_column(model.split(":")[0], justify="center")
+    table.add_column("Succeeded On")
+
+    for a in report.attacks:
+        color = {
+            "UNIVERSAL": "green",
+            "HIGH":      "yellow",
+            "MEDIUM":    "orange1",
+            "LOW":       "red",
+        }.get(a.transferability_label, "white")
+
+        table.add_row(
+            a.attack_id,
+            f"[{color}]{a.transferability_label}[/{color}]",
+            f"{a.transferability_score:.2f}",
+            *["✅" if a.results_by_model.get(m) else "❌" for m in models],
+            ", ".join(a.succeeded_on),
+        )
+
+    console.print(table)
+
+    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"  Universal attacks (all models):  [green]{len(report.universal_attacks)}[/green]")
+    console.print(f"  High transferability (2/3):      [yellow]{len(report.high_transfer_attacks)}[/yellow]")
+    console.print(f"  Model-specific (1 model only):   [red]{len(report.model_specific_attacks)}[/red]")
+    console.print(f"  Most vulnerable model:           [red]{report.most_vulnerable_model}[/red]")
+    console.print(f"  Most resistant model:            [green]{report.most_resistant_model}[/green]")
+
+    path = save_transferability_report(report)
+    console.print(f"\n[dim]Report saved: {path}[/dim]")
+
 
 if __name__ == "__main__":
     app()
