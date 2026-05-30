@@ -8,7 +8,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from analysis.pdf_reporter import generate_pdf_report
 from rich.markup import escape
-
+from attacks.minimizer.delta_debugger import DeltaDebugger
+from analysis.minimizer_report import save_minimization_report
 import typer
 from rich.console import Console
 from core.logger import setup_logger
@@ -298,6 +299,85 @@ def drift(
 
     path = save_drift_report(report)
     console.print(f"\n[dim]Report saved: {path}[/dim]")
+
+@app.command()
+def minimize(
+    attack_ids: str = typer.Option(..., "--attacks", help="Comma-separated attack IDs e.g. PI-006,PI-004"),
+    attack_type: str = typer.Option("prompt_injection", "--type", help="prompt_injection or jailbreak"),
+    threshold: float = typer.Option(0.7, "--threshold", help="Min score to still count as success"),
+    max_queries: int = typer.Option(80, "--max-queries", help="Max LLM calls per attack"),
+):
+    """Minimize successful attacks to their shortest effective form (delta debugging)."""
+    import json
+    from pathlib import Path
+    from core.llm_client import llm_client
+    from core.scorer import Scorer
+    from rich.table import Table
+
+    setup_logger()
+
+    ids = [a.strip() for a in attack_ids.split(",")]
+    scorer = Scorer()
+
+    payload_file = (
+        Path("attacks/prompt_injection/payloads/injection_payloads.json")
+        if attack_type == "prompt_injection"
+        else Path("attacks/jailbreaks/payloads/jailbreak_payloads.json")
+    )
+    raw_payloads = json.loads(payload_file.read_text())
+
+    # Build id -> prompt string lookup
+    payload_map: dict[str, str] = {}
+    for p in raw_payloads:
+        pid = p.get("id", "")
+        if pid in ids:
+            payload_map[pid] = p.get("prompt", p.get("payload", ""))
+
+    console.print(f"\n[bold]Attack Minimizer[/bold] — threshold={threshold} | max_queries={max_queries}")
+
+    def scorer_fn(prompt: str) -> float:
+        response = llm_client.generate(prompt)
+        result = scorer.score(prompt, response.text, attack_type, payload_indicators=[])
+        return result.score
+
+    debugger = DeltaDebugger(scorer_fn, threshold=threshold, max_queries=max_queries)
+    results = []
+
+    for aid in ids:
+        if aid not in payload_map:
+            console.print(f"[yellow]  {aid} not found in {payload_file.name}, skipping[/yellow]")
+            continue
+        prompt = payload_map[aid]
+        console.print(f"\n  Minimizing [cyan]{aid}[/cyan] ({len(prompt.split())} tokens)...")
+        result = debugger.minimize(aid, prompt, attack_type)
+        results.append(result)
+
+    # Results table
+    table = Table(title=f"Minimization Results — {llm_client.model}")
+    table.add_column("ID",        style="cyan")
+    table.add_column("Original",  justify="right")
+    table.add_column("Minimal",   justify="right")
+    table.add_column("Reduction", justify="right")
+    table.add_column("Queries",   justify="right")
+    table.add_column("Score",     justify="right")
+    table.add_column("Result")
+
+    for r in results:
+        table.add_row(
+            r.attack_id,
+            str(r.original_tokens),
+            str(r.minimal_tokens),
+            f"{r.reduction_ratio:.1%}",
+            str(r.queries_used),
+            f"{r.minimal_score:.3f}",
+            "[green]SUCCESS[/green]" if r.success else "[red]NO REDUCTION[/red]",
+        )
+
+    console.print(table)
+
+    if results:
+        report_path = save_minimization_report(results, llm_client.model)
+        console.print(f"\nReport saved: {report_path}")
 
 if __name__ == "__main__":
     app()
