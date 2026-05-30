@@ -2,6 +2,7 @@
 import sys
 from analysis.transferability import build_transferability_matrix, load_latest_benchmark, save_transferability_report
 from analysis.defense_advisor import get_recommendations_from_suite
+from attacks.fuzzer.autofuzzer import AutoFuzzer, save_fuzz_report
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from analysis.pdf_reporter import generate_pdf_report
@@ -165,6 +166,84 @@ def transferability():
     path = save_transferability_report(report)
     console.print(f"\n[dim]Report saved: {path}[/dim]")
 
+@app.command()
+def fuzz(
+    attack_id: str = typer.Option("PI-006", "--attack-id", "-a", help="Seed attack ID to fuzz"),
+    attack_type: str = typer.Option("prompt_injection", "--type", "-t", help="prompt_injection or jailbreak"),
+    generations: int = typer.Option(3, "--generations", "-g", help="Number of evolutionary generations"),
+    variants: int = typer.Option(4, "--variants", "-v", help="Variants per generation"),
+):
+    """Run adaptive attack fuzzer from a seed payload."""
+    from core.llm_client import llm_client
+    import json
+    from pathlib import Path
+
+    setup_logger()
+
+    # Load seed payload
+    if attack_type == "prompt_injection":
+        payload_file = Path("attacks/prompt_injection/payloads/injection_payloads.json")
+    else:
+        payload_file = Path("attacks/jailbreaks/payloads/jailbreak_payloads.json")
+
+    with open(payload_file) as f:
+        payloads = json.load(f)
+
+    seed = next((p for p in payloads if p["id"] == attack_id), None)
+    if not seed:
+        console.print(f"[red]Attack ID {attack_id} not found.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold cyan]AutoFuzzer[/bold cyan] — seed: [yellow]{attack_id}[/yellow] | "
+                  f"generations: [yellow]{generations}[/yellow] | "
+                  f"variants/gen: [yellow]{variants}[/yellow]")
+    console.print(f"[dim]Seed payload: {seed['payload'][:80]}...[/dim]\n")
+
+    fuzzer = AutoFuzzer(llm_client)
+    report = fuzzer.fuzz(
+        seed_payload=seed["payload"],
+        seed_attack_id=attack_id,
+        attack_type=attack_type,
+        generations=generations,
+        variants_per_gen=variants,
+    )
+
+    # Print results
+    from rich.table import Table
+    table = Table(title=f"Fuzz Results — {attack_id} ({report.total_variants} variants)")
+    table.add_column("Variant ID", style="cyan")
+    table.add_column("Gen", justify="center")
+    table.add_column("Strategy")
+    table.add_column("Score", justify="center")
+    table.add_column("Result", justify="center")
+    table.add_column("Reasoning")
+
+    for r in report.all_results:
+        status = "[green]SUCCESS[/green]" if r.succeeded else "[red]FAILED[/red]"
+        table.add_row(
+            r.variant_id,
+            str(r.generation),
+            r.mutation_strategy,
+            f"{r.score:.3f}",
+            status,
+            r.judge_reasoning[:60] + "..." if len(r.judge_reasoning) > 60 else r.judge_reasoning,
+        )
+
+    console.print(table)
+    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"  Total variants tested:    [cyan]{report.total_variants}[/cyan]")
+    console.print(f"  Successful variants:      [green]{len(report.successful_variants)}[/green]")
+    console.print(f"  Success rate:             [yellow]{report.success_rate:.1%}[/yellow]")
+    if report.most_effective_strategy:
+        console.print(f"  Most effective strategy:  [green]{report.most_effective_strategy}[/green]")
+    if report.best_mutation:
+        console.print(f"\n[bold]Best mutation found:[/bold]")
+        console.print(f"  Strategy: {report.best_mutation.mutation_strategy}")
+        console.print(f"  Score: {report.best_mutation.score:.3f}")
+        console.print(f"  Payload: {report.best_mutation.payload[:120]}...")
+
+    path = save_fuzz_report(report)
+    console.print(f"\n[dim]Report saved: {path}[/dim]")
 
 if __name__ == "__main__":
     app()
