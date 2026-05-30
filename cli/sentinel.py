@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 from analysis.transferability import build_transferability_matrix, load_latest_benchmark, save_transferability_report
+from analysis.drift_tester import DriftTester, save_drift_report
 from analysis.defense_advisor import get_recommendations_from_suite
 from attacks.fuzzer.autofuzzer import AutoFuzzer, save_fuzz_report
 from pathlib import Path
@@ -243,6 +244,59 @@ def fuzz(
         console.print(f"  Payload: {report.best_mutation.payload[:120]}...")
 
     path = save_fuzz_report(report)
+    console.print(f"\n[dim]Report saved: {path}[/dim]")
+
+@app.command()
+def drift(
+    attacks: str = typer.Option("PI-001,PI-004,PI-006", "--attacks", "-a", help="Comma-separated attack IDs"),
+    attack_type: str = typer.Option("prompt_injection", "--type", "-t", help="prompt_injection or jailbreak"),
+    temps: str = typer.Option("0.1,0.3,0.5,0.7,0.9", "--temps", help="Comma-separated temperature points"),
+):
+    """Test how model safety degrades as temperature increases."""
+    from core.llm_client import llm_client
+    from rich.table import Table
+
+    setup_logger()
+
+    attack_list = [a.strip() for a in attacks.split(",")]
+    temp_list   = [float(t.strip()) for t in temps.split(",")]
+
+    console.print(f"\n[bold cyan]Safety Alignment Drift Test[/bold cyan]")
+    console.print(f"[dim]Attacks: {', '.join(attack_list)} | Temperatures: {temp_list}[/dim]\n")
+
+    tester = DriftTester(llm_client)
+    report = tester.test(attack_list, attack_type=attack_type, temperature_points=temp_list)
+
+    # Print drift table
+    table = Table(title=f"Safety Drift — {report.model_name}")
+    table.add_column("Attack", style="cyan")
+    for t in temp_list:
+        table.add_column(f"t={t}", justify="center")
+    table.add_column("Threshold")
+    table.add_column("Max Score", justify="center")
+
+    for curve in report.curves:
+        row = [curve.attack_id]
+        for t in temp_list:
+            r = curve.results_by_temperature.get(t)
+            if r:
+                color = "green" if r.succeeded else "red"
+                row.append(f"[{color}]{r.score:.2f}[/{color}]")
+            else:
+                row.append("N/A")
+        threshold = str(curve.drift_threshold) if curve.drift_threshold else "never"
+        row.append(threshold)
+        row.append(f"{curve.max_score:.3f}")
+        table.add_row(*row)
+
+    console.print(table)
+    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"  Safest temperature:            [green]{report.safest_temperature}[/green]")
+    console.print(f"  Most vulnerable temperature:   [red]{report.most_vulnerable_temperature}[/red]")
+    if report.most_temperature_sensitive:
+        console.print(f"  Most temperature-sensitive:    [yellow]{report.most_temperature_sensitive.attack_id}[/yellow]")
+
+    path = save_drift_report(report)
     console.print(f"\n[dim]Report saved: {path}[/dim]")
 
 if __name__ == "__main__":
