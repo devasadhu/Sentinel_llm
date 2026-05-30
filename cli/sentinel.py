@@ -10,6 +10,8 @@ from analysis.pdf_reporter import generate_pdf_report
 from rich.markup import escape
 from attacks.minimizer.delta_debugger import DeltaDebugger
 from analysis.minimizer_report import save_minimization_report
+from attacks.contextual.multiturn_attacker import MultiTurnAttacker
+from analysis.multiturn_report import save_multiturn_report
 import typer
 from rich.console import Console
 from core.logger import setup_logger
@@ -377,6 +379,64 @@ def minimize(
 
     if results:
         report_path = save_minimization_report(results, llm_client.model)
+        console.print(f"\nReport saved: {report_path}")
+
+@app.command()
+def multiturn(
+    attacks: str = typer.Option("MT-001,MT-002,MT-003,MT-004", "--attacks", "-a", help="Comma-separated attack IDs"),
+    model: str = typer.Option("llama3.2:1b", "--model", "-m", help="Ollama model name"),
+    threshold: float = typer.Option(0.7, "--threshold", help="Score threshold for success"),
+):
+    """Run multi-turn contextual jailbreak attacks."""
+    from core.scorer import Scorer
+    from rich.table import Table
+
+    setup_logger()
+
+    ids = [a.strip() for a in attacks.split(",")]
+    scorer = Scorer()
+
+    console.print(f"\n[bold cyan]Multi-Turn Contextual Jailbreaks[/bold cyan]")
+    console.print(f"[dim]Attacks: {', '.join(ids)} | Model: {model}[/dim]\n")
+
+    attacker = MultiTurnAttacker(model=model, scorer=scorer, threshold=threshold)
+    results = []
+
+    for aid in ids:
+        defn = MultiTurnAttacker.ATTACK_DEFINITIONS.get(aid)
+        if not defn:
+            console.print(f"[yellow]  {aid} not found, skipping[/yellow]")
+            continue
+        console.print(f"  Running [cyan]{aid}[/cyan] — {defn['name']}...")
+        result = attacker.run(aid)
+        if result:
+            results.append(result)
+            status = "[green]SUCCESS[/green]" if result.success else "[red]FAILED[/red]"
+            console.print(f"  {status} | score={result.final_score:.3f} | turns={result.turns} | drift={[round(s,2) for s in result.compliance_drift]}")
+
+    # Summary table
+    table = Table(title=f"Multi-Turn Results — {model}")
+    table.add_column("ID",       style="cyan")
+    table.add_column("Strategy")
+    table.add_column("Turns",    justify="right")
+    table.add_column("Score",    justify="right")
+    table.add_column("Drift")
+    table.add_column("Result")
+
+    for r in results:
+        table.add_row(
+            r.attack_id,
+            r.strategy,
+            str(r.turns),
+            f"{r.final_score:.3f}",
+            str([round(s, 2) for s in r.compliance_drift]),
+            "[green]SUCCESS[/green]" if r.success else "[red]FAILED[/red]",
+        )
+
+    console.print(table)
+
+    if results:
+        report_path = save_multiturn_report(results, model)
         console.print(f"\nReport saved: {report_path}")
 
 if __name__ == "__main__":
