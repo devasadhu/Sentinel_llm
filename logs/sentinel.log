@@ -685,3 +685,4 @@
 2026-05-31 16:44:02 | INFO     | analysis.safety_layer_report:save_safety_layer_report:32 | Safety layer report saved: reports/safety_layer_20260531_134402.json
 2026-05-31 16:50:37 | INFO     | core.logger:setup_logger:29 | SentinelLLM logger initialized
 2026-05-31 16:50:37 | INFO     | core.logger:setup_logger:29 | SentinelLLM logger initialized
+2026-05-31 17:02:26 | INFO     | core.logger:setup_logger:29 | SentinelLLM logger initialized

@@ -7,6 +7,7 @@ from attacks.fuzzer.autofuzzer import AutoFuzzer, save_fuzz_report
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from attacks.safety_probe.layer_detector import SafetyLayerDetector
+from core.async_runner import run_parallel
 from storage.replay_store import ReplayStore
 from analysis.safety_layer_report import save_safety_layer_report
 from analysis.pdf_reporter import generate_pdf_report
@@ -72,25 +73,53 @@ def run(
                 console.print(f"    [dim]Code:[/dim]")
                 console.print(f"    [green]{escape(r.code_snippet)}[/green]\n")
 
-
 @app.command()
 def benchmark(
     models: str = typer.Option("llama3.2:1b,llama3.1:8b,qwen2.5:3b", help="Comma-separated model names"),
     suites: str = typer.Option("injection,jailbreak", help="Comma-separated attack suites"),
+    parallel: bool = typer.Option(False, "--parallel", "-p", help="Run models concurrently"),
+    workers: int = typer.Option(3, "--workers", "-w", help="Thread pool size (parallel only)"),
 ):
     """Run attack suites against multiple models and compare results."""
     from core.benchmarker import run_benchmark
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     import json, os
     from datetime import datetime
 
     model_list = [m.strip() for m in models.split(",")]
     suite_list = [s.strip() for s in suites.split(",")]
 
-    console.print(f"[cyan]Benchmarking {len(model_list)} models across {len(suite_list)} suites...[/cyan]")
+    if parallel:
+        console.print(f"[bold]Parallel benchmark[/bold] | models={model_list} | workers={workers}")
+        all_results = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(run_benchmark, [m], suite_list): m for m in model_list}
+            for future in as_completed(futures):
+                model = futures[future]
+                try:
+                    result = future.result()
+                    all_results.extend(result.models)
+                    console.print(f"  [green]✓[/green] {model} done")
+                except Exception as exc:
+                    console.print(f"  [red]✗[/red] {model} failed: {exc}")
+        # Reconstruct a report-like object for the table
 
-    report = run_benchmark(model_list, suite_list)
+        class _Report:
+            def __init__(self, models): self.models = models
+            def to_dict(self):
+                out = []
+                for m in self.models:
+                    d = {}
+                    for k, v in vars(m).items():
+                        try:
+                            import json; json.dumps(v)
+                            d[k] = v
+                        except (TypeError, ValueError):
+                            d[k] = str(v)
+                    out.append(d)
+                return {"models": out}
+        report = _Report(all_results)
 
-    # Print comparison table
     from rich.table import Table
     table = Table(title="Model Vulnerability Comparison")
     table.add_column("Model", style="cyan")
@@ -99,7 +128,6 @@ def benchmark(
     table.add_column("Avg Score", justify="center")
     table.add_column("Overall Vuln %", justify="center")
     table.add_column("Successful Attacks")
-
     for m in report.models:
         table.add_row(
             m.model_name,
@@ -109,16 +137,15 @@ def benchmark(
             f"{m.overall_vulnerability:.1%}",
             ", ".join(m.successful_attacks) or "none",
         )
-
     console.print(table)
 
-    # Save report
     os.makedirs("reports", exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = f"reports/benchmark_{ts}.json"
     with open(path, "w") as f:
         json.dump(report.to_dict(), f, indent=2)
     console.print(f"[green]Report saved: {path}[/green]")
+
 
 @app.command()
 def transferability():
@@ -507,6 +534,7 @@ def probe(
 
     report_path = save_safety_layer_report(profiles)
     console.print(f"\nReport saved: {report_path}")
+
 @app.command()
 def replay_list(
     attack_id: str = typer.Option("", "--attack", "-a", help="Filter by attack ID"),
