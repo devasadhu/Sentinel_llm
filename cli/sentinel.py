@@ -7,6 +7,7 @@ from attacks.fuzzer.autofuzzer import AutoFuzzer, save_fuzz_report
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from attacks.safety_probe.layer_detector import SafetyLayerDetector
+from storage.replay_store import ReplayStore
 from analysis.safety_layer_report import save_safety_layer_report
 from analysis.pdf_reporter import generate_pdf_report
 from rich.markup import escape
@@ -506,6 +507,55 @@ def probe(
 
     report_path = save_safety_layer_report(profiles)
     console.print(f"\nReport saved: {report_path}")
+@app.command()
+def replay_list(
+    attack_id: str = typer.Option("", "--attack", "-a", help="Filter by attack ID"),
+):
+    """List all stored replay records."""
+    from rich.table import Table
+
+    setup_logger()
+    store = ReplayStore()
+    records = store.find_by_attack(attack_id) if attack_id else store.load_all()
+
+    if not records:
+        console.print("[yellow]No replay records found.[/yellow]")
+        return
+
+    table = Table(title=f"Replay Records ({len(records)} total)")
+    table.add_column("Replay ID",  style="cyan")
+    table.add_column("Attack ID")
+    table.add_column("Model")
+    table.add_column("Temp",  justify="right")
+    table.add_column("Score", justify="right")
+    table.add_column("Result")
+    table.add_column("Timestamp")
+
+    for r in records:
+        table.add_row(
+            r.replay_id,
+            r.attack_id,
+            r.model,
+            str(r.temperature),
+            f"{r.score:.3f}",
+            "[green]SUCCESS[/green]" if r.succeeded else "[red]FAILED[/red]",
+            r.timestamp[:19],
+        )
+    console.print(table)
+
+
+@app.command()
+def replay_verify():
+    """Verify integrity of all replay records (detect tampering)."""
+    setup_logger()
+    store = ReplayStore()
+    result = store.verify_all()
+    console.print(f"\n[bold]Replay Integrity Check[/bold]")
+    console.print(f"  Total records: {result['total']}")
+    console.print(f"  Valid:         [green]{result['valid']}[/green]")
+    console.print(f"  Tampered:      [red]{result['tampered']}[/red]")
+    if result["tampered_ids"]:
+        console.print(f"  Tampered IDs:  {result['tampered_ids']}")
 
 if __name__ == "__main__":
     app()
