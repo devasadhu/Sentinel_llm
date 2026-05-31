@@ -6,6 +6,8 @@ from analysis.defense_advisor import get_recommendations_from_suite
 from attacks.fuzzer.autofuzzer import AutoFuzzer, save_fuzz_report
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from attacks.safety_probe.layer_detector import SafetyLayerDetector
+from analysis.safety_layer_report import save_safety_layer_report
 from analysis.pdf_reporter import generate_pdf_report
 from rich.markup import escape
 from attacks.minimizer.delta_debugger import DeltaDebugger
@@ -438,6 +440,72 @@ def multiturn(
     if results:
         report_path = save_multiturn_report(results, model)
         console.print(f"\nReport saved: {report_path}")
+
+@app.command()
+def probe(
+    models: str = typer.Option("llama3.2:1b,llama3.1:8b,qwen2.5:3b", "--models", "-m", help="Comma-separated model names"),
+):
+    """Fingerprint safety layer architecture of target models (black-box)."""
+    from rich.table import Table
+
+    setup_logger()
+
+    model_list = [m.strip() for m in models.split(",")]
+
+    console.print(f"\n[bold cyan]Safety Layer Detection[/bold cyan]")
+    console.print(f"[dim]Models: {', '.join(model_list)} | Probes: 6 per model[/dim]\n")
+
+    profiles = []
+    for model in model_list:
+        console.print(f"  Probing [cyan]{model}[/cyan]...")
+        detector = SafetyLayerDetector(model=model)
+        profile = detector.detect()
+        profiles.append(profile)
+
+        color = {
+            "RULE_BASED":  "yellow",
+            "RLHF":        "green",
+            "GUARD_MODEL": "blue",
+            "HYBRID":      "magenta",
+            "UNKNOWN":     "red",
+        }.get(profile.safety_type, "white")
+
+        console.print(
+            f"  [{color}]{profile.safety_type}[/{color}] "
+            f"confidence={profile.confidence:.0%} | "
+            f"threshold=sensitivity-{profile.refusal_threshold} | "
+            f"latency_ratio={profile.latency_ratio:.1f}x | "
+            f"variance={profile.refusal_variance:.1f}"
+        )
+        for line in profile.reasoning:
+            console.print(f"    [dim]→ {line}[/dim]")
+        console.print()
+
+    # Summary table
+    table = Table(title="Safety Layer Fingerprints")
+    table.add_column("Model",      style="cyan")
+    table.add_column("Type",       style="bold")
+    table.add_column("Confidence", justify="right")
+    table.add_column("Threshold",  justify="right")
+    table.add_column("Latency ×",  justify="right")
+    table.add_column("Variance",   justify="right")
+    table.add_column("Front-loaded")
+
+    for p in profiles:
+        table.add_row(
+            p.model,
+            p.safety_type,
+            f"{p.confidence:.0%}",
+            str(p.refusal_threshold),
+            f"{p.latency_ratio:.1f}x",
+            f"{p.refusal_variance:.1f}",
+            "Yes" if p.front_loaded_refusals else "No",
+        )
+
+    console.print(table)
+
+    report_path = save_safety_layer_report(profiles)
+    console.print(f"\nReport saved: {report_path}")
 
 if __name__ == "__main__":
     app()
