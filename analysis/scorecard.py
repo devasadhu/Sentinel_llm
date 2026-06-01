@@ -77,10 +77,17 @@ def build_scorecard(model: str) -> ModelScorecard:
     # --- Injection & jailbreak scores from benchmark report ---
     bench = _load_latest_report("benchmark")
     if bench:
-        model_data = bench.get("by_model", {}).get(model, {})
-        card.injection_score  = model_data.get("prompt_injection", {}).get("mean_score", 0.0)
-        card.jailbreak_score  = model_data.get("jailbreak", {}).get("mean_score", 0.0)
-        card.attack_count     = model_data.get("total_attacks", 0)
+        # bench["models"] is a list of ModelResult dicts — find this model's entry
+        model_data = next(
+            (m for m in bench.get("models", []) if m.get("model_name") == model),
+            {}
+        )
+        card.injection_score  = model_data.get("injection_avg_score", 0.0)
+        card.jailbreak_score  = model_data.get("jailbreak_avg_score", 0.0)
+        card.attack_count     = (
+            model_data.get("injection_total", 0) +
+            model_data.get("jailbreak_total", 0)
+        )
     else:
         card.notes.append("No benchmark report found — run: sentinel benchmark")
 
