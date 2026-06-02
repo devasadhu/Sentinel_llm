@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 import sys
+import os
+os.environ["ONNXRUNTIME_LOGGING_LEVEL"] = "3"
+
+import warnings
+warnings.filterwarnings("ignore")
+import logging
+logging.getLogger("onnxruntime").setLevel(logging.ERROR)
 from analysis.transferability import build_transferability_matrix, load_latest_benchmark, save_transferability_report
 from analysis.drift_tester import DriftTester, save_drift_report
 from analysis.defense_advisor import get_recommendations_from_suite
@@ -741,6 +748,32 @@ def regression(
     fixed = sum(1 for r in results if r.status == "FIXED")
     regressed = sum(1 for r in results if r.status == "REGRESSED")
     console.print(f"\n[green]Fixed: {fixed}[/green]  [red]Regressed: {regressed}[/red]  Stable: {len(results) - fixed - regressed}")
+
+
+@app.command()
+def rag(
+    model: str = typer.Option("llama3.2:1b", "--model", "-m", help="Ollama model to test"),
+    attack_ids: str = typer.Option("", "--attacks", "-a", help="Comma-separated IDs e.g. RAG-001,RAG-002 (default: all)"),
+):
+    """
+    Run RAG poisoning attacks — plant malicious chunks in a vector DB
+    and measure whether the LLM trusts retrieved poison over its safety training.
+    """
+    from rich.table import Table
+    from attacks.rag.rag_attacker import run_rag_suite, RAG_ATTACK_SUITE
+    from analysis.rag_report import save_rag_report, print_rag_summary
+
+    setup_logger()
+
+    console.print(f"\n[bold cyan]RAG Poisoning Module[/bold cyan] | model=[yellow]{model}[/yellow]")
+    console.print(f"[dim]Two variants: direct_poison (targeted chunk) + retrieval_hijack (broad surface)[/dim]\n")
+
+    report = run_rag_suite(model=model)
+    print_rag_summary(report)
+
+    path = save_rag_report(report)
+    console.print(f"\n[dim]Report saved: {path}[/dim]")
+
 
 if __name__ == "__main__":
     app()
