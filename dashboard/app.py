@@ -413,11 +413,11 @@ if bench_reports:
     bench_rows = []
     for m in bench.get("models", []):
         bench_rows.append({
-            "Model": m["model"],
-            "Injection Rate": f"{m['injection']['success_rate']*100:.1f}%",
-            "Jailbreak Rate": f"{m['jailbreak']['success_rate']*100:.1f}%",
-            "Overall Vuln %": f"{m['overall_vulnerability']*100:.1f}%",
-            "Successful Attacks": ", ".join(m["successful_attacks"]) or "none",
+            "Model": m["model_name"],
+            "Injection Rate": f"{m.get('injection_avg_score', 0)*100:.1f}%",
+            "Jailbreak Rate": f"{m.get('jailbreak_avg_score', 0)*100:.1f}%",
+            "Overall Vuln %": f"{(m.get('injection_succeeded',0)+m.get('jailbreak_succeeded',0)) / max(m.get('injection_total',1)+m.get('jailbreak_total',1),1)*100:.1f}%",
+            "Successful Attacks": ", ".join(m.get("successful_attacks", [])) or "none",
         })
     st.dataframe(pd.DataFrame(bench_rows), use_container_width=True, hide_index=True)
     st.caption(f"Benchmark run: {bench.get('timestamp','')[:16].replace('T',' ')} UTC")
@@ -438,6 +438,162 @@ if successful_ids:
             st.code(rec.code_snippet, language="python")
 else:
     st.success("No successful attacks in this report — no remediations needed.")
+
+# ── Attack Heatmaps ──────────────────────────────────────────────────────
+st.divider()
+st.markdown("### Attack Heatmaps")
+
+try:
+    import plotly.graph_objects as go
+    import glob
+
+    col_h1, col_h2 = st.columns(2)
+
+    # ── Heatmap 1: Attack transferability — attack_id × model ────────────
+    with col_h1:
+        st.markdown("#### Transferability Matrix")
+        st.caption("Which attacks succeed across models (True = succeeded)")
+
+        t_files = sorted(glob.glob("reports/transferability*.json"), reverse=True)
+        if t_files:
+            t_data = json.load(open(t_files[0]))
+            attacks_list = t_data.get("attacks", [])
+            models_list  = t_data.get("models", [])
+
+            if attacks_list and models_list:
+                # Build z matrix: rows = attacks, cols = models
+                attack_ids = [a["attack_id"] for a in attacks_list]
+                z = []
+                hover = []
+                for atk in attacks_list:
+                    rbm = atk.get("results_by_model", {})
+                    row_z     = [1 if rbm.get(m) else 0 for m in models_list]
+                    row_hover = [
+                        f"{atk['attack_id']} on {m}<br>"
+                        f"{'✅ Succeeded' if rbm.get(m) else '❌ Failed'}<br>"
+                        f"Transferability: {atk.get('transferability_label','?')}"
+                        for m in models_list
+                    ]
+                    z.append(row_z)
+                    hover.append(row_hover)
+
+                fig1 = go.Figure(go.Heatmap(
+                    z=z,
+                    x=models_list,
+                    y=attack_ids,
+                    text=hover,
+                    hoverinfo="text",
+                    colorscale=[[0, "#1a3a1a"], [1, "#39d353"]],
+                    showscale=False,
+                    xgap=3,
+                    ygap=3,
+                ))
+                fig1.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#e6edf3"),
+                    margin=dict(l=80, r=20, t=20, b=40),
+                    height=max(250, len(attack_ids) * 28 + 80),
+                    xaxis=dict(side="top", tickfont=dict(size=11)),
+                    yaxis=dict(tickfont=dict(size=11)),
+                )
+                st.plotly_chart(fig1, use_container_width=True)
+                st.caption(
+                    f"Most vulnerable: **{t_data['summary'].get('most_vulnerable_model','?')}** · "
+                    f"Most resistant: **{t_data['summary'].get('most_resistant_model','?')}**"
+                )
+            else:
+                st.info("No attack data in transferability report.")
+        else:
+            st.info("No transferability report. Run: `python -m cli.sentinel transferability`")
+
+    # ── Heatmap 2: Model risk dimensions — metric × model ────────────────
+    with col_h2:
+        st.markdown("#### Model Risk Fingerprint")
+        st.caption("Scorecard dimensions per model (higher = more vulnerable)")
+
+        s_files = sorted(glob.glob("reports/scorecard*.json"), reverse=True)
+        if s_files:
+            sc_data = json.load(open(s_files[0]))
+            # sc_data is a list of ModelScorecard dicts
+            if sc_data:
+                sc_models  = [m["model"] for m in sc_data]
+                dimensions = [
+                    ("Injection",        "injection_score"),
+                    ("Jailbreak",        "jailbreak_score"),
+                    ("Transferability",  "transferability"),
+                    ("Instability",      "drift_stability"),   # inverted below
+                    ("Overall Risk",     "overall_risk"),
+                ]
+                dim_labels = [d[0] for d in dimensions]
+                z2 = []
+                hover2 = []
+                for label, key in dimensions:
+                    row_z = []
+                    row_h = []
+                    for m in sc_data:
+                        val = m.get(key, 0.0)
+                        # drift_stability: high stability = low risk; invert for display
+                        display_val = (1.0 - val) if key == "drift_stability" else val
+                        row_z.append(round(display_val, 3))
+                        row_h.append(
+                            f"{label} · {m['model']}<br>"
+                            f"Value: {display_val:.3f}<br>"
+                            f"Risk: {m.get('risk_label', m.get('overall_risk','?'))}"
+                        )
+                    z2.append(row_z)
+                    hover2.append(row_h)
+
+                fig2 = go.Figure(go.Heatmap(
+                    z=z2,
+                    x=sc_models,
+                    y=dim_labels,
+                    text=hover2,
+                    hoverinfo="text",
+                    colorscale="Reds",
+                    zmin=0.0,
+                    zmax=1.0,
+                    showscale=True,
+                    colorbar=dict(
+                        title=dict(text="Risk", font=dict(color="#e6edf3")),
+                        tickfont=dict(color="#e6edf3"),
+                        len=0.8,
+                    ),
+                    xgap=3,
+                    ygap=3,
+                ))
+                fig2.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#e6edf3"),
+                    margin=dict(l=110, r=20, t=20, b=40),
+                    height=max(250, len(dim_labels) * 44 + 80),
+                    xaxis=dict(side="top", tickfont=dict(size=11)),
+                    yaxis=dict(tickfont=dict(size=11)),
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+
+                # Risk label badges under the chart
+                badge_cols = st.columns(len(sc_models))
+                risk_colors = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}
+                for i, m in enumerate(sc_data):
+                    label = m.get("risk_label", "?")
+                    # risk_label may not be serialized — compute from overall_risk
+                    risk = m.get("overall_risk", 0)
+                    if label == "?":
+                        label = "CRITICAL" if risk >= 0.75 else "HIGH" if risk >= 0.5 else "MEDIUM" if risk >= 0.25 else "LOW"
+                    badge_cols[i].metric(
+                        m["model"],
+                        f"{risk_colors.get(label,'⚪')} {label}",
+                        f"risk={risk:.2f}"
+                    )
+        else:
+            st.info("No scorecard report. Run: `python -m cli.sentinel scorecard`")
+
+except ImportError:
+    st.warning("Plotly not installed. Run: `pip install plotly --break-system-packages`")
+except Exception as e:
+    st.error(f"Heatmap error: {e}")
 
 # ── Footer ────────────────────────────────────────────────────────────────
 st.markdown(
