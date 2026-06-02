@@ -775,5 +775,20 @@ def rag(
     console.print(f"\n[dim]Report saved: {path}[/dim]")
 
 
+
+@app.command()
+def supply_chain(
+    model: str = typer.Option("llama3.2:1b", help="Model to audit"),
+) -> None:
+    """Audit model artifacts for supply-chain tampering: hash integrity, template injection, config anomalies."""
+    from attacks.supply_chain.supply_chain_auditor import run_supply_chain_audit
+    from analysis.supply_chain_report import save_supply_chain_report, print_supply_chain_report
+    setup_logger()
+    console.print(f"\n[bold cyan]Supply Chain Audit[/bold cyan] | model=[yellow]{model}[/yellow]")
+    report = run_supply_chain_audit(model=model)
+    print_supply_chain_report(report)
+    path = save_supply_chain_report(report)
+    console.print(f"\n[dim]Report saved: {path}[/dim]")
+
 if __name__ == "__main__":
     app()
