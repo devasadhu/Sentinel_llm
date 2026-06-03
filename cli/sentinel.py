@@ -790,5 +790,21 @@ def supply_chain(
     path = save_supply_chain_report(report)
     console.print(f"\n[dim]Report saved: {path}[/dim]")
 
+
+@app.command()
+def agent(
+    model: str = typer.Option("llama3.1:8b", help="Model to attack (needs tool_calls support)"),
+) -> None:
+    """Run agent attack suite: tool abuse, function injection, goal hijacking, memory poisoning, indirect injection."""
+    from attacks.agent.agent_attacker import run_agent_suite
+    from analysis.agent_report import save_agent_report, print_agent_report
+    setup_logger()
+    console.print(f"\n[bold cyan]Agent Attack Suite[/bold cyan] | model=[yellow]{model}[/yellow]")
+    console.print(f"[dim]5 categories: tool_abuse, function_injection, goal_hijacking, memory_poisoning, indirect_injection[/dim]\n")
+    report = run_agent_suite(model=model)
+    print_agent_report(report)
+    path = save_agent_report(report)
+    console.print(f"\n[dim]Report saved: {path}[/dim]")
+
 if __name__ == "__main__":
     app()
